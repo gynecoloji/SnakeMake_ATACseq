@@ -1,0 +1,14 @@
+# ATAC-seq analysis configuration
+
+# Sample information table
+samples_table: "ref/samples.csv"
+
+# Adapter sequences for trimming
+adapter_r1: "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA"
+adapter_r2: "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+
+# Reference genome index for bowtie2
+hisat2_index: "ref/ENSEMBL/genome"
+
+# Blacklist regions file
+blacklist: "ref/hg38_blacklist_regions.bed"
