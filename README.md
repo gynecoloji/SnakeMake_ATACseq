@@ -1,42 +1,41 @@
 # ATAC-seq Analysis Pipeline
-A Snakemake workflow for processing ATAC-seq data from raw reads to peak calling, with extensive QC metrics and analysis. This pipeline handles paired-end Illumina ATAC-seq data.
+
+A comprehensive Snakemake workflow for processing and analyzing ATAC-seq data from raw reads to peak calling with extensive quality control metrics.
 
 ## Overview
 
-This pipeline performs the following steps:
+This pipeline integrates two complementary Snakemake workflows:
+1. **Primary ATAC-seq workflow** - Processes raw FASTQ files through alignment, filtering, and peak calling
+2. **ATAC-seq QC workflow** - Generates extensive QC metrics and visualizations for quality assessment
 
-1. **Quality control and preprocessing**
-   - FastQC for raw read QC
-   - Fastp for adapter trimming and quality filtering
+## Workflow Diagram
 
-2. **Alignment**
-   - Alignment with HISAT2
-   - Filtering, sorting and indexing with Samtools
+The complete workflow is shown below:
 
-3. **Post-processing**
-   - Deduplication with Picard
-   - Blacklist region filtering with BEDTools
+![ATAC-seq Workflow Diagram](ATAC_seq_QC_Basic.png)
 
-4. **Peak calling and analysis**
-   - Peak calling with MACS2
-   - IDR analysis for replicate consistency
+## Features
 
-5. **QC metrics and visualization**
-   - Fragment size distribution
-   - TSS enrichment
-   - Fingerprint analysis
-   - GC bias assessment
-   - PCA/correlation analysis
-   - Library complexity metrics (NRF, PBC1, PBC2)
-   - Fraction of Reads in Peaks (FRiP)
-   - Mitochondrial content analysis
+- **Complete end-to-end processing** of paired-end ATAC-seq data
+- **Extensive QC metrics** for comprehensive quality assessment
+- **Blacklist region filtering** for removal of technical artifacts
+- **Library complexity assessment** (NRF, PBC1, PBC2)
+- **TSS enrichment analysis** for confirmation of open chromatin detection
+- **Fragment size distribution** for nucleosomal pattern assessment
+- **IDR analysis** for replicate consistency evaluation
+- **Signal track generation** (bigWig, bedGraph) for visualization
+- **Conda environment management** for simplified dependency handling
 
-## Dependencies
+## Requirements
 
-The pipeline uses conda environments to manage dependencies. The main requirements are:
+The pipeline requires the following dependencies:
 
-- Snakemake ≥7.0.0
-- Python ≥3.8
+- [Snakemake](https://snakemake.readthedocs.io/) ≥7.0.0
+- [Conda](https://docs.conda.io/en/latest/) / [Mamba](https://github.com/mamba-org/mamba) (recommended)
+- [Python](https://www.python.org/) ≥3.8
+- UNIX-based system (Linux/MacOS)
+
+Software dependencies (automatically installed via conda environments):
 - FastQC
 - Fastp
 - HISAT2
@@ -50,28 +49,43 @@ The pipeline uses conda environments to manage dependencies. The main requiremen
 ## Installation
 
 ```bash
-# Clone this repository
+# Clone the repository
 git clone https://github.com/yourusername/atac-seq-pipeline.git
 cd atac-seq-pipeline
 
-# Create conda environment with Snakemake
+# Create main conda environment
 conda env create -f environment.yaml
 conda activate atac_seq
 ```
 
-## Usage
+## Configuration
 
-### 1. Prepare your data
+Edit `ref/config.yaml` to match your experimental setup and reference files:
 
-Place raw FASTQ files in the `data/` directory following this naming convention:
+```yaml
+# Sample information
+samples_table: "samples.csv"  # CSV with sample_id and group columns
+
+# Reference data
+hisat2_index: "path/to/hisat2_index" 
+blacklist: "path/to/blacklist.bed"
+gtf_file: "path/to/gencode.v36.annotation.gtf"
+genome_2bit: "path/to/hg38.2bit"
+```
+
+## Data Preparation
+
+### Input Files
+
+Place paired-end FASTQ files in the `data/` directory following this naming convention:
 ```
 data/{sample}_R1_001.fastq.gz
 data/{sample}_R2_001.fastq.gz
 ```
 
-### 2. Create sample sheet
+### Sample Information
 
-Create a CSV file (e.g., `samples.csv`) with sample information:
+Create a samples table CSV file with the following format:
 ```csv
 sample_id,group
 sample1,control
@@ -80,59 +94,117 @@ sample3,treatment
 sample4,treatment
 ```
 
-### 3. Configure the pipeline
+The `group` column is used for organizing samples into experimental groups for IDR analysis.
 
-Edit `ref/config.yaml` to define parameters and reference files:
-```yaml
-# Sample information
-samples_table: "samples.csv"  # CSV with sample information
+## Running the Pipeline
 
-# Reference data
-hisat2_index: "path/to/index"
-blacklist: "path/to/blacklist.bed"
-gtf_file: "path/to/gencode.v36.annotation.gtf"
-genome_2bit: "path/to/hg38.2bit"
-```
+### Dry Run
 
-### 4. Run the pipeline
-
+To check the workflow without executing any commands:
 ```bash
-# Dry run to check workflow
 snakemake -n
-
-# Run locally
-snakemake --use-conda --cores 24
-
-# Run on a cluster (SLURM example)
-snakemake --use-conda --cluster "sbatch -p {params.partition} -c {threads} -t {params.time}" --jobs 100
 ```
 
-## Output Structure
+### Local Execution
+
+To run on a local machine with 8 cores:
+```bash
+snakemake --use-conda --cores 24
+```
+
+### Cluster Execution
+
+For execution on a SLURM cluster: (Not tested)
+```bash
+snakemake --use-conda \
+  --cluster "sbatch -p {params.partition} -c {threads} -t {params.time}" \
+  --jobs 100
+```
+
+## Pipeline Details
+
+### 1. Quality Control and Preprocessing
+
+- **FastQC** - Quality assessment of raw reads
+- **Fastp** - Adapter trimming and quality filtering with the following parameters:
+  - Minimum read length: 30bp
+  - Auto-detection of adapters for paired-end data
+  - Polyg tail trimming
+  - Quality trimming: sliding window of 4 with mean quality 20
+
+### 2. Alignment and Filtering
+
+- **HISAT2** - Alignment to reference genome with options:
+  - No spliced alignment (--no-spliced-alignment)
+  - No discordant alignments (--no-discordant)
+  - No mixed alignments (--no-mixed)
+  - Insert size up to 3000bp (-X 3000)
+- **Samtools** - Filtering and processing of alignments:
+  - Properly paired reads only (-f 0x2)
+  - Primary alignments only (-F 0x100)
+  - Uniquely mapped reads only (NH:i:1)
+
+### 3. Post-processing
+
+- **Picard MarkDuplicates** - PCR duplicate removal
+- **BEDTools** - Filtering against blacklist regions
+
+### 4. Peak Calling
+
+- **MACS2** - Peak calling with the following parameters:
+  - Format: BAMPE (paired-end)
+  - Genome size: hs (human)
+  - No model (--nomodel)
+  - Shift: -75
+  - Extension size: 150bp
+  - q-value cutoff: 0.05
+
+### 5. QC Metrics
+
+- **Fragment Size Analysis** - Distribution visualization using DeepTools bamPEFragmentSize
+- **TSS Enrichment** - Signal enrichment around transcription start sites
+- **Fingerprint Analysis** - Assessment of signal enrichment using plotFingerprint
+- **GC Bias Assessment** - GC content bias evaluation using computeGCBias
+- **PCA/Correlation Analysis** - Sample correlation and principal component analysis
+- **Library Complexity** - PCR bottleneck coefficients and non-redundant fraction
+- **FRiP Score** - Fraction of reads in peaks calculation
+- **MT Content** - Mitochondrial contamination assessment
+- **IDR Analysis** - Irreproducible Discovery Rate for replicate consistency
+- **Blacklist Filtering Statistics** - Evaluation of reads removed by blacklist filtering
+
+## Output Files
+
+The pipeline generates the following output directories:
 
 ```
 results/
-├── fastqc/                    # FastQC reports
-├── fastp/                     # Trimmed reads and reports
-├── aligned/                   # HISAT2 alignment files
-├── filtered/                  # Filtered BAM files 
-├── dedup/                     # Deduplicated BAM files
-├── blacklist_filtered/        # Blacklist-filtered BAM files
-├── peaks/                     # MACS2 peak calls
-├── bigwig/                    # BigWig files for visualization
-├── bedgraph/                  # Bedgraph files
-├── idr/                       # IDR analysis results
-├── deeptools/                 # DeepTools analysis results
-│   ├── fragmentSize.png       # Fragment size distribution
-│   ├── ATACseq_fingerprint.pdf # Fingerprint plot
-│   ├── gc_content.pdf         # GC bias assessment
-│   ├── Heatmap_TSS.pdf        # TSS heatmap
-│   └── Profile_TSS.pdf        # TSS profile plot
-├── FRiP/                      # Fraction of reads in peaks
-├── library_complexity/        # Library complexity metrics
-└── qc/                        # QC summary reports
+├── fastqc/                 # FastQC reports
+├── fastp/                  # Trimmed reads and reports
+├── aligned/                # HISAT2 alignment files
+├── filtered/               # Filtered BAM files
+├── dedup/                  # Deduplicated BAM files
+├── blacklist_filtered/     # Blacklist-filtered BAM files
+├── peaks/                  # MACS2 peak calls
+├── bigwig/                 # BigWig files for visualization
+├── bedgraph/               # Bedgraph files for visualization
+├── deeptools/              # DeepTools analysis results
+│   ├── fragmentSize.png    # Fragment size distribution
+│   ├── ATACseq_fingerprint.pdf # Fingerprint analysis
+│   ├── Heatmap_TSS.pdf     # TSS enrichment heatmap
+│   ├── Profile_TSS.pdf     # TSS enrichment profile
+│   ├── *_gc_content.pdf    # GC bias plots
+│   ├── deeptools_heatmap.pdf # Sample correlation heatmap
+│   ├── deeptools_PCA.pdf   # PCA plot
+│   └── *.counts_chr.txt    # Chromosome read count files
+├── FRiP/                   # Fraction of reads in peaks
+├── library_complexity/     # Library complexity metrics
+├── idr/                    # IDR analysis results
+└── qc/                     # QC summary reports
 ```
 
-## Quality Control Metrics
+## Quality Control Criteria
+
+The following thresholds can be used to evaluate your ATAC-seq data quality:
 
 | Metric | Description | Good | Acceptable | Poor |
 |--------|-------------|------|------------|------|
@@ -149,18 +221,34 @@ results/
 
 ### Common Issues
 
-1. **Low alignment rate**: Check adapter trimming and reference genome compatibility
-2. **High duplication rate**: Indicates low library complexity; optimize input material
-3. **Poor TSS enrichment**: Issues with sample quality or tagmentation
-4. **High mitochondrial content**: Consider nuclear isolation protocols
-5. **Failed IDR**: Low reproducibility between replicates; check protocol consistency
-6. **GC bias**: Consider GC bias correction methods for downstream analysis
-7. **Peak number too low/high**: Adjust MACS2 parameters (q-value/p-value cutoffs)
-8. **Blacklist filtering removes too many reads**: Check blacklist regions compatibility
+1. **Low alignment rate** 
+   - Check reference genome compatibility
+   - Verify adapter trimming parameters
+   - Check for sample contamination
 
-### Logs
+2. **High duplication rate**
+   - Low library complexity issue
+   - Consider optimizing chromatin extraction or Tn5 tagmentation
+   - Increase sequencing depth for better coverage
 
-Error logs for each step are stored in the `logs/` directory, organized by rule name:
+3. **Poor TSS enrichment**
+   - Issues with sample quality or chromatin accessibility
+   - Check protocol for nuclei isolation and tagmentation
+   - Verify blacklist filtering is not removing genuine signal
+
+4. **High mitochondrial content**
+   - Common in certain cell types
+   - Consider nuclear isolation protocols
+   - May require additional sequencing depth to compensate
+
+5. **Failed IDR analysis**
+   - Low reproducibility between replicates
+   - Check experimental conditions for consistency
+   - May indicate technical issues with sample preparation
+
+### Log Files
+
+Log files for each step are stored in the `logs/` directory:
 ```
 logs/
 ├── fastqc/
@@ -170,7 +258,17 @@ logs/
 ├── dedup/
 ├── blacklist_filter/
 ├── macs2/
-└── ...
+├── deeptools_bedgraph/
+├── deeptools_bigwig/
+├── deeptools_fragmentsize/
+├── deeptools_plotfingerprint/
+├── deeptools_correlation/
+├── deeptools_gc_bias/
+├── mt_content/
+├── deeptools_tss/
+├── FRIP/
+├── idr/
+└── blacklist_stats/
 ```
 
 ## Citation
@@ -178,14 +276,14 @@ logs/
 If you use this pipeline in your research, please cite:
 
 ```
-https://github.com/gynecoloji/SnakeMake_ATACseq/
+https://github.com/gynecoloji/SnakeMake_ATACseq
 ```
 
-📄 License
+## License
+
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-📧 Contact
-For questions or feedback, please open an issue on the GitHub repository or contact the author.
+## Contact
 
-Last updated: April 30, 2025
-Created by: gynecoloji
+Your Name - gynecoloji  
+Project Link: [https://github.com/yourusername/atac-seq-pipeline](https://github.com/yourusername/atac-seq-pipeline)
