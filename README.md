@@ -181,12 +181,11 @@ If you use this pipeline in your research, please cite:
 Your Name et al. (20XX). ATAC-seq analysis pipeline for comprehensive chromatin accessibility profiling.
 ```
 
-## License
-
+📄 License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contact
+📧 Contact
+For questions or feedback, please open an issue on the GitHub repository or contact the author.
 
-Your Name - email@example.com
-
-Project Link: [https://github.com/yourusername/atac-seq-pipeline](https://github.com/yourusername/atac-seq-pipeline)
+Last updated: April 30, 2025
+Created by: gynecoloji
