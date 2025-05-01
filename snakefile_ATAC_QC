@@ -1,0 +1,469 @@
+# Snakefile for ATAC-seq QC Pipeline
+# Based on workflow_ATACSeq_QC and related scripts
+
+import pandas as pd
+import os
+from itertools import combinations
+
+
+
+
+
+# Configuration
+configfile: "ref/config.yaml"
+
+# Load sample information from a table
+samples_df = pd.read_csv(config["samples_table"])
+
+# Extract sample information
+SAMPLES = samples_df['sample_id'].tolist()
+
+# Define paths
+PROCESSED_DIR = "results"
+RMD_BAM_DIR = os.path.join(PROCESSED_DIR, "blacklist_filtered")
+BIGWIG_DIR = os.path.join(PROCESSED_DIR, "bigwig")
+BEDGRAPH_DIR = os.path.join(PROCESSED_DIR, "bedgraph")
+DEEPTOOLS_DIR = os.path.join(PROCESSED_DIR, "deeptools")
+FRIP_DIR = os.path.join(PROCESSED_DIR,"FRiP")
+IDR_DIR = os.path.join(PROCESSED_DIR, "IDR")
+PEAK_DIR = os.path.join(PROCESSED_DIR, "peaks")
+
+
+# Reference data
+REF_DIR = "ref"
+GENOME_2BIT = os.path.join(REF_DIR, "hg38.2bit")
+GTF_FILE = os.path.join(REF_DIR, "gencode.v36.annotation.gtf")
+
+
+# IDR pairs
+GROUPS = samples_df.groupby("group")["sample_id"].apply(list).to_dict()
+IDR_PAIRS = []
+for group, samples in GROUPS.items():
+    for a, b in combinations(samples, 2):
+        IDR_PAIRS.append((group, a, b))
+
+# peak selection
+def get_all_peak_types():
+    peak_types = []
+    for condition in ["narrowPeak", "broadPeak"]:
+        # Check if any sample has this peak type
+        for sample in SAMPLES:
+            if os.path.exists(os.path.join(PEAK_DIR, f"{sample}_peaks.{condition}")):
+                peak_types.append(condition)
+                break
+    return peak_types
+
+print("IDR_PAIRS:", IDR_PAIRS)
+print("Peak types:", get_all_peak_types())
+
+
+# Define final output files
+rule all:
+    input:
+        # DeepTools bedgraph outputs
+        expand(os.path.join(BEDGRAPH_DIR, "{sample}.nobl.RPGC.bedgraph"), sample=SAMPLES),
+        
+        # DeepTools bigwig outputs
+        expand(os.path.join(BIGWIG_DIR, "{sample}.nobl.RPGC.bw"), sample=SAMPLES),
+        
+        # Fragment size analysis
+        os.path.join(DEEPTOOLS_DIR, "fragmentSize.png"),
+        os.path.join(DEEPTOOLS_DIR, "fragmentsize.txt"),
+        
+        # Fingerprint analysis
+        os.path.join(DEEPTOOLS_DIR, "ATACseq_fingerprint.pdf"),
+        os.path.join(DEEPTOOLS_DIR, "ATACseq_fingerprint.tab"),
+        
+        # Correlation and GC bias analysis
+        os.path.join(DEEPTOOLS_DIR, "deeptools_multiBAM.out.npz"),
+        os.path.join(DEEPTOOLS_DIR, "deeptools_scatterplot.pdf"),
+        os.path.join(DEEPTOOLS_DIR, "deeptools_heatmap.pdf"),
+        os.path.join(DEEPTOOLS_DIR, "deeptools_PCA.pdf"),
+        expand(os.path.join(DEEPTOOLS_DIR, "{sample}.gc_content.pdf"), sample=SAMPLES),
+        
+        # MT content analysis
+        expand(os.path.join(DEEPTOOLS_DIR, "{sample}.counts_chr.txt"), sample=SAMPLES),
+        
+        # TSS enrichment
+        os.path.join(DEEPTOOLS_DIR, "matrix.mat.gz"),
+        os.path.join(DEEPTOOLS_DIR, "Heatmap_TSS.pdf"),
+        os.path.join(DEEPTOOLS_DIR, "Profile_TSS.pdf"),
+
+        # FRiP
+        # Dynamically determine which FRiP files to create based on existing peak files
+        expand(os.path.join(FRIP_DIR, "{sample}.{condition}.frip.txt"), 
+               sample=SAMPLES,condition=get_all_peak_types()),
+
+        # idr
+        [expand("results/idr/{group}--{rep1}--{rep2}--idr_peaks.{condition}.txt",
+               condition=get_all_peak_types(),
+               group=[group], rep1=[rep1], rep2=[rep2])
+               for group, rep1, rep2 in IDR_PAIRS],
+
+        # library complexity
+        expand("results/library_complexity/{sample}_complexity.txt", sample=SAMPLES)
+
+
+# 1. DeepTools bedgraph generation
+rule deeptools_bedgraph:
+    input:
+        bam = os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam")
+    output:
+        bedgraph = os.path.join(BEDGRAPH_DIR, "{sample}.nobl.RPGC.bedgraph")
+    params:
+        genome_size = 2701495761
+    threads: 8
+    log:
+        "logs/deeptools_bedgraph/{sample}.log"
+    shell:
+        """
+        mkdir -p {BEDGRAPH_DIR}
+        bamCoverage -p {threads} \
+            --outFileFormat bedgraph \
+            --effectiveGenomeSize {params.genome_size} \
+            --normalizeUsing RPGC \
+            --binSize 10 \
+            --extendReads \
+            --bam {input.bam} \
+            -o {output.bedgraph} 2> {log}
+        """
+
+# 2. DeepTools bigwig generation
+rule deeptools_bigwig:
+    input:
+        bam = os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam")
+    output:
+        bigwig = os.path.join(BIGWIG_DIR, "{sample}.nobl.RPGC.bw")
+    params:
+        genome_size = 2701495761
+    threads: 8
+    log:
+        "logs/deeptools_bigwig/{sample}.log"
+    shell:
+        """
+        mkdir -p {BIGWIG_DIR}
+        bamCoverage -p {threads} \
+            --effectiveGenomeSize {params.genome_size} \
+            --normalizeUsing RPGC \
+            --binSize 50 \
+            --extendReads \
+            --bam {input.bam} \
+            -o {output.bigwig} 2> {log}
+        """
+
+# 3. DeepTools fragment size analysis
+rule deeptools_fragmentsize:
+    input:
+        bams = expand(os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam"), sample=SAMPLES)
+    output:
+        plot = os.path.join(DEEPTOOLS_DIR, "fragmentSize.png"),
+        table = os.path.join(DEEPTOOLS_DIR, "fragmentsize.txt")
+    threads: 12
+    log:
+        "logs/deeptools_fragmentsize/fragmentsize.log"
+    shell:
+        """
+        mkdir -p {DEEPTOOLS_DIR}
+        bamPEFragmentSize -p {threads} \
+            -hist {output.plot} \
+            -T "Fragment size of PE ATACseq data" \
+            --maxFragmentLength 1500 \
+            -b {input.bams} \
+            --table {output.table} 2> {log}
+        """
+
+# 4. DeepTools fingerprint plot
+rule deeptools_plotfingerprint:
+    input:
+        bams = expand(os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam"), sample=SAMPLES)
+    output:
+        plot = os.path.join(DEEPTOOLS_DIR, "ATACseq_fingerprint.pdf"),
+        table = os.path.join(DEEPTOOLS_DIR, "ATACseq_fingerprint.tab")
+    threads: 12
+    log:
+        "logs/deeptools_plotfingerprint/fingerprint.log"
+    shell:
+        """
+        mkdir -p {DEEPTOOLS_DIR}
+        plotFingerprint -p {threads} \
+            -b {input.bams} \
+            --ignoreDuplicates \
+            -T "Fingerprints" \
+            --skipZeros \
+            -plot {output.plot} \
+            --outRawCounts {output.table} 2> {log}
+        """
+
+# 5. DeepTools correlation and GC content analysis
+rule deeptools_cor_multibam:
+    input:
+        bams = expand(os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam"), sample=SAMPLES)
+    output:
+        npz = os.path.join(DEEPTOOLS_DIR, "deeptools_multiBAM.out.npz"),
+        counts = os.path.join(DEEPTOOLS_DIR, "deeptools_readCounts.tab")
+    threads: 12
+    log:
+        "logs/deeptools_correlation/multibam.log"
+    shell:
+        """
+        mkdir -p {DEEPTOOLS_DIR}
+        multiBamSummary bins \
+            -bs 5000 \
+            --ignoreDuplicates \
+            -p {threads} \
+            --bamfiles {input.bams} \
+            -out {output.npz} \
+            --outRawCounts {output.counts} 2> {log}
+        """
+
+rule deeptools_cor_scatterplot:
+    input:
+        npz = os.path.join(DEEPTOOLS_DIR, "deeptools_multiBAM.out.npz")
+    output:
+        plot = os.path.join(DEEPTOOLS_DIR, "deeptools_scatterplot.pdf")
+    threads: 4
+    log:
+        "logs/deeptools_correlation/scatterplot.log"
+    shell:
+        """
+        plotCorrelation --corData {input.npz} \
+            --whatToPlot scatterplot \
+            --skipZero \
+            --plotTitle "Scatterplot" \
+            --plotFileFormat pdf \
+            --corMethod spearman \
+            --log1p \
+            --plotFile {output.plot} 2> {log}
+        """
+
+rule deeptools_cor_heatmap:
+    input:
+        npz = os.path.join(DEEPTOOLS_DIR, "deeptools_multiBAM.out.npz")
+    output:
+        plot = os.path.join(DEEPTOOLS_DIR, "deeptools_heatmap.pdf")
+    threads: 4
+    log:
+        "logs/deeptools_correlation/heatmap.log"
+    shell:
+        """
+        plotCorrelation --corData {input.npz} \
+            --whatToPlot heatmap \
+            --skipZero \
+            --plotTitle "Heatmap" \
+            --plotFileFormat pdf \
+            --corMethod spearman \
+            --log1p \
+            --plotFile {output.plot} 2> {log}
+        """
+
+rule deeptools_cor_pca:
+    input:
+        npz = os.path.join(DEEPTOOLS_DIR, "deeptools_multiBAM.out.npz")
+    output:
+        plot = os.path.join(DEEPTOOLS_DIR, "deeptools_PCA.pdf"),
+        data = os.path.join(DEEPTOOLS_DIR, "deeptools_PCA.tab")
+    threads: 4
+    log:
+        "logs/deeptools_correlation/pca.log"
+    shell:
+        """
+        plotPCA --corData {input.npz} \
+            --plotTitle "PCA" \
+            --plotFileFormat pdf \
+            --ntop 1000 \
+            --plotFile {output.plot} \
+            --outFileNameData {output.data} 2> {log}
+        """
+
+rule deeptools_gc_bias:
+    input:
+        bam = os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam"),
+        genome = GENOME_2BIT
+    output:
+        freq = os.path.join(DEEPTOOLS_DIR, "{sample}.gc_content.txt"),
+        plot = os.path.join(DEEPTOOLS_DIR, "{sample}.gc_content.pdf")
+    params:
+        genome_size = 2913022398
+    threads: 8
+    log:
+        "logs/deeptools_gc_bias/{sample}.log"
+    shell:
+        """
+        mkdir -p {DEEPTOOLS_DIR}
+        computeGCBias -b {input.bam} \
+            --effectiveGenomeSize {params.genome_size} \
+            -p {threads} \
+            --genome {input.genome} \
+            -freq {output.freq} \
+            --biasPlot {output.plot} 2> {log}
+        """
+
+# 6. MT content analysis
+rule mt_content:
+    input:
+        bam = os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam")
+    output:
+        counts = os.path.join(DEEPTOOLS_DIR, "{sample}.counts_chr.txt")
+    threads: 4
+    log:
+        "logs/mt_content/{sample}.log"
+    shell:
+        """
+        mkdir -p {DEEPTOOLS_DIR}
+        samtools view {input.bam} | cut -f 3 | sort | uniq -c | grep "_" -v > {output.counts} 2> {log}
+        """
+
+# 7. DeepTools TSS enrichment
+rule deeptools_tss:
+    input:
+        bigwigs = expand(os.path.join(BIGWIG_DIR, "{sample}.nobl.RPGC.bw"), sample=SAMPLES),
+        gtf = GTF_FILE
+    output:
+        matrix = os.path.join(DEEPTOOLS_DIR, "matrix.mat.gz"),
+        heatmap = os.path.join(DEEPTOOLS_DIR, "Heatmap_TSS.pdf"),
+        profile = os.path.join(DEEPTOOLS_DIR, "Profile_TSS.pdf")
+    threads: 16
+    log:
+        "logs/deeptools_tss/tss.log"
+    shell:
+        """
+        mkdir -p {DEEPTOOLS_DIR}
+        
+        # Generate matrix
+        computeMatrix reference-point \
+            -p {threads} \
+            --referencePoint TSS \
+            -S {input.bigwigs} \
+            -R {input.gtf} \
+            -a 2000 -b 2000 \
+            --skipZeros \
+            -o {output.matrix} 2> {log}
+        
+        # Generate heatmap
+        plotHeatmap \
+            -m {output.matrix} \
+            --dpi 300 \
+            --zMin -3 --zMax 3 \
+            --heatmapWidth 20 \
+            -out {output.heatmap} \
+            --sortUsing mean 2>> {log}
+        
+        # Generate profile plot
+        plotProfile \
+            -m {output.matrix} \
+            --dpi 300 \
+            -out {output.profile} 2>> {log}
+        """
+
+# 8. apply FRiP to filtered, no blacklisted and deduplicated bam files
+rule FRiP:
+    input:
+        bamfile = os.path.join(RMD_BAM_DIR, "{sample}.nobl.bam"),
+        peakfile = os.path.join(PEAK_DIR, "{sample}_peaks.{condition}")
+    output:
+        fripfile = os.path.join(FRIP_DIR, "{sample}.{condition}.frip.txt")
+    conda:
+        "envs/bedtools.yaml"
+    wildcard_constraints:
+        condition = "narrowPeak|broadPeak"
+    shell:
+        """
+        mkdir -p logs/FRIP {FRIP_DIR}
+        total=$(samtools view -c {input.bamfile})
+        in_peaks=$(bedtools intersect -u -a <(samtools view -b {input.bamfile}) -b {input.peakfile} | samtools view -c -)
+        echo "scale=4; $in_peaks / $total" | bc > {output.fripfile}
+        """
+
+# 9. idr on peaks
+rule idr:
+    input:
+        rep1=lambda wildcards: f"{PEAK_DIR}/{wildcards.rep1}_peaks.{wildcards.condition}",
+        rep2=lambda wildcards: f"{PEAK_DIR}/{wildcards.rep2}_peaks.{wildcards.condition}"
+    output:
+        peaks="results/idr/{group}--{rep1}--{rep2}--idr_peaks.{condition}.txt"
+    conda:
+        "envs/idr.yaml"
+    wildcard_constraints:
+        condition = "narrowPeak|broadPeak"
+    log:
+        "logs/idr/{group}--{rep1}--{rep2}--idr_{condition}.log"
+    shell:
+        """
+        echo "Processing: {wildcards.group}, {wildcards.rep1}, {wildcards.rep2}, {wildcards.condition}" > {log}
+        mkdir -p results/idr logs/idr
+        idr --samples {input.rep1} {input.rep2} \
+            --input-file-type narrowPeak \
+            --rank p.value \
+            --output-file {output.peaks} \
+            --plot \
+            --log-output-file {log}
+        """
+
+# 10. apply library complexity to raw bam/sam files just after alignment and only count primary alignments
+rule calculate_library_complexity:
+    input:
+        sam="results/aligned/{sample}.sam"
+    output:
+        bam="results/aligned/{sample}.sorted.bam",
+        bai="results/aligned/{sample}.sorted.bam.bai",
+        txt="results/library_complexity/{sample}_complexity.txt"
+    conda:
+        "envs/bedtools.yaml"  # Make sure this contains samtools and bedtools
+    threads: 8
+    shell:
+        """
+        # Convert SAM to BAM and sort
+        samtools view -@ {threads} -b {input.sam} | \
+        samtools sort -@ {threads} -o {output.bam} -
+        
+        # Index BAM file
+        samtools index {output.bam}
+        
+        # Create directory for complexity metrics
+        mkdir -p results/library_complexity
+        
+        # Create a BED file of properly paired read fragments
+        # For ATAC-seq, we're interested in fragments not individual reads
+        bedtools bamtobed -bedpe -i {output.bam} 2>/dev/null | \
+        awk '{{if ($1==$4 && $9=="+") {{print $1"\\t"$2"\\t"$6"\\t"$7}}}}' | \
+        sort | uniq | sort -k1,1 -k2,2n -k3,3n > tmp_fragments_{wildcards.sample}.bed
+        
+        # Count total mapped reads (divide by 2 for fragment count)
+        total=$(samtools view -c -F 4 {output.bam})
+        fragment_count=$((total / 2))
+        
+        # Count unique fragments
+        unique=$(wc -l < tmp_fragments_{wildcards.sample}.bed)
+        
+        # Count fragments occurring exactly once
+        sort tmp_fragments_{wildcards.sample}.bed | uniq -c > tmp_count_{wildcards.sample}.txt
+        one_read=$(grep -w "1" tmp_count_{wildcards.sample}.txt | wc -l)
+        
+        # Count fragments occurring exactly twice
+        two_reads=$(grep -w "2" tmp_count_{wildcards.sample}.txt | wc -l)
+        
+        # Prevent division by zero
+        if [ "$unique" -eq 0 ]; then unique=1; fi
+        if [ "$two_reads" -eq 0 ]; then two_reads=1; fi
+        
+        # Calculate NRF (Non-Redundant Fraction)
+        nrf=$(echo "scale=4; $unique / $fragment_count" | bc)
+        
+        # Calculate PBC1 (PCR Bottleneck Coefficient 1)
+        pbc1=$(echo "scale=4; $one_read / $unique" | bc)
+        
+        # Calculate PBC2 (PCR Bottleneck Coefficient 2)
+        pbc2=$(echo "scale=4; $one_read / $two_reads" | bc)
+        
+        # Write results
+        echo -e "Total Fragments\\t$fragment_count" > {output.txt}
+        echo -e "Unique Fragments\\t$unique" >> {output.txt}
+        echo -e "One-read Fragments\\t$one_read" >> {output.txt}
+        echo -e "Two-read Fragments\\t$two_reads" >> {output.txt}
+        echo -e "NRF\\t$nrf" >> {output.txt}
+        echo -e "PBC1\\t$pbc1" >> {output.txt}
+        echo -e "PBC2\\t$pbc2" >> {output.txt}
+        
+        # Clean up temporary files
+        rm tmp_fragments_{wildcards.sample}.bed tmp_count_{wildcards.sample}.txt
+        """
