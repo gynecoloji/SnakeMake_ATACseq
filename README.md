@@ -178,7 +178,7 @@ logs/
 If you use this pipeline in your research, please cite:
 
 ```
-Your Name et al. (20XX). ATAC-seq analysis pipeline for comprehensive chromatin accessibility profiling.
+https://github.com/gynecoloji/SnakeMake_ATACseq/
 ```
 
 📄 License
