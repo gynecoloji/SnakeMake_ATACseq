@@ -171,7 +171,9 @@ rule remove_duplicates:
         """
 
 # Filter against blacklist regions
+# Filter against blacklist regions
 rule filter_blacklist:
+    priority: 10
     input:
         bam = f"{DEDUP_DIR}/{{sample}}.dedup.bam",
         blacklist = config["blacklist"]
@@ -179,23 +181,74 @@ rule filter_blacklist:
         filtered_bam = f"{BLACKLIST_FILTERED_DIR}/{{sample}}.nobl.bam",
         filtered_bai = f"{BLACKLIST_FILTERED_DIR}/{{sample}}.nobl.bam.bai",
         excluded_reads = f"{BLACKLIST_FILTERED_DIR}/{{sample}}.blacklisted.bam"
+    params:
+        temp_bedpe = f"{TMP_DIR}/{{sample}}.fragments.bedpe",
+        temp_fragment_bed = f"{TMP_DIR}/{{sample}}.fragments.bed",
+        temp_blacklist_fragments = f"{TMP_DIR}/{{sample}}.blacklisted.fragments.bed",
+        temp_blacklist_ids = f"{TMP_DIR}/{{sample}}.blacklisted.ids.txt",
+        temp_namesorted_bam = f"{TMP_DIR}/{{sample}}.namesorted.bam",
+        temp_filtered_bam = f"{TMP_DIR}/{{sample}}.filtered.bam",
+        temp_excluded_bam = f"{TMP_DIR}/{{sample}}.excluded.bam"
     threads: 8
     log:
         "logs/blacklist_filter/{sample}.log"
     shell:
         """
-        mkdir -p {BLACKLIST_FILTERED_DIR}
+        mkdir -p {BLACKLIST_FILTERED_DIR} {TMP_DIR}
         
-        # Filter out reads overlapping with blacklisted regions
-        bedtools intersect -v -abam {input.bam} -b {input.blacklist} > {output.filtered_bam} 2> {log}
+        # Convert BAM to BEDPE format
+        # This creates a BEDPE file with paired-end information
+        samtools sort -n -@ {threads} {input.bam} | \
+        bedtools bamtobed -bedpe -i stdin > {params.temp_bedpe} 2> {log}
         
-        # Collect reads that were filtered out (for QC purposes)
-        bedtools intersect -abam {input.bam} -b {input.blacklist} > {output.excluded_reads} 2>> {log}
+        # Convert BEDPE to fragment BED (one entry per fragment)
+        # Format: chrom, fragment_start, fragment_end, read_name, score, strand
+        # We'll extract the fragment coordinates (minimum start, maximum end) 
+        # and keep the read name for later filtering
+        awk 'BEGIN {{OFS="\\t"}} {{if ($1==$4) print $1, ($2<$5?$2:$5), ($3>$6?$3:$6), $7, ".", ($9=="+"?"+":"-")}}' \
+        {params.temp_bedpe} > {params.temp_fragment_bed} 2>> {log}
+        
+        # Find fragments that intersect with blacklisted regions
+        bedtools intersect -a {params.temp_fragment_bed} -b {input.blacklist} -wa > {params.temp_blacklist_fragments} 2>> {log}
+        
+        # Extract read IDs from blacklisted fragments
+        cut -f4 {params.temp_blacklist_fragments} | sort | uniq > {params.temp_blacklist_ids} 2>> {log}
+        
+        # Sort BAM by read name for paired-end processing (if not already name-sorted)
+        samtools sort -n -@ {threads} -o {params.temp_namesorted_bam} {input.bam} 2>> {log}
+        
+        # Create properly paired BAMs - one with fragments that don't overlap blacklist
+        
+        # Filter out fragments overlapping blacklisted regions
+        samtools view -@ {threads} -b -N ^{params.temp_blacklist_ids} \
+            {params.temp_namesorted_bam} > {params.temp_filtered_bam} 2>> {log}
+            
+        # Extract fragments overlapping blacklisted regions
+        samtools view -@ {threads} -b -N {params.temp_blacklist_ids} \
+            {params.temp_namesorted_bam} > {params.temp_excluded_bam} 2>> {log}
+            
+        # Sort filtered BAM (non-blacklisted fragments) by coordinate for final output
+        samtools sort -@ {threads} -o {output.filtered_bam} {params.temp_filtered_bam} 2>> {log}
+        
+        # Sort excluded BAM (blacklisted fragments) by coordinate for QC
+        samtools sort -@ {threads} -o {output.excluded_reads} {params.temp_excluded_bam} 2>> {log}
         
         # Index the filtered BAM
-        samtools index -@ {threads} {output.filtered_bam} {output.filtered_bai}
+        samtools index -@ {threads} {output.filtered_bam} {output.filtered_bai} 2>> {log}
+        
+        # Clean up temporary files
+        rm -f {params.temp_bedpe} {params.temp_fragment_bed} {params.temp_blacklist_fragments} \
+            {params.temp_blacklist_ids} {params.temp_namesorted_bam} {params.temp_filtered_bam} \
+            {params.temp_excluded_bam}
+        
+        # Report stats
+        echo "Blacklist filtering completed for {wildcards.sample}" >> {log}
+        echo "$(wc -l < {params.temp_blacklist_fragments}) fragments overlap blacklisted regions" >> {log}
+        echo "$(wc -l < {params.temp_blacklist_ids}) unique fragment IDs overlapping blacklisted regions" >> {log}
+        echo "$(samtools view -c {output.excluded_reads}) total reads in excluded fragments" >> {log}
+        echo "$(samtools view -c {output.filtered_bam}) total reads in filtered output" >> {log}
         """
-
+        
 # Call peaks with MACS2 (without input control) - now using blacklist filtered BAM
 rule call_peaks:
     input:
