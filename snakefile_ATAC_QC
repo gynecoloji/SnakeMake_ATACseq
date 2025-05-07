@@ -402,68 +402,132 @@ rule idr:
 # 10. apply library complexity to raw bam/sam files just after alignment and only count primary alignments
 rule calculate_library_complexity:
     input:
-        sam="results/aligned/{sample}.sam"
+        bam="results/filtered/{sample}.sorted.filtered.bam"
     output:
-        bam="results/aligned/{sample}.sorted.bam",
-        bai="results/aligned/{sample}.sorted.bam.bai",
         txt="results/library_complexity/{sample}_complexity.txt"
     conda:
-        "envs/bedtools.yaml"  # Make sure this contains samtools and bedtools
+        "envs/bedtools.yaml"  # Make sure this contains samtools, bedtools, and bc
     threads: 8
+    log:
+        "logs/library_complexity/{sample}.log"
+    params:
+        temp_dir="temp/{sample}",
+        tmp = "temp/{sample}.bed"
     shell:
         """
-        # Convert SAM to BAM and sort
-        samtools view -@ {threads} -b {input.sam} | \
-        samtools sort -@ {threads} -o {output.bam} -
-        
-        # Index BAM file
-        samtools index {output.bam}
-        
-        # Create directory for complexity metrics
-        mkdir -p results/library_complexity
+        # Create directories
+        mkdir -p results/library_complexity logs/library_complexity
+        mkdir -p {params.temp_dir}
         
         # Create a BED file of properly paired read fragments
-        # For ATAC-seq, we're interested in fragments not individual reads
-        bedtools bamtobed -bedpe -i {output.bam} 2>/dev/null | \
-        awk '{{if ($1==$4 && $9=="+") {{print $1"\\t"$2"\\t"$6"\\t"$7}}}}' | \
-        sort | uniq | sort -k1,1 -k2,2n -k3,3n > tmp_fragments_{wildcards.sample}.bed
+        echo "Extracting fragments from BAM file..." >> {log}
+        samtools sort -n -@ {threads} {input.bam} | \
+        bedtools bamtobed -bedpe -i stdin > {params.tmp} 2>> {log}
+        awk 'BEGIN {{OFS="\t"}} {{
+            # Keep only proper pairs on same chromosome with correct orientation
+            if ($1==$4) {{
+                # Get fragment coordinates (start of left mate to end of right mate)
+                start = ($2 < $5) ? $2 : $5;
+                end = ($3 > $6) ? $3 : $6;
+                print $1, start, end, $7;
+            }}
+        }}' {params.tmp} | \
+        sort -k1,1 -k2,2n -k3,3n | uniq > {params.temp_dir}/fragments.bed
         
-        # Count total mapped reads (divide by 2 for fragment count)
-        total=$(samtools view -c -F 4 {output.bam})
-        fragment_count=$((total / 2))
         
-        # Count unique fragments
-        unique=$(wc -l < tmp_fragments_{wildcards.sample}.bed)
+        # Get total fragments from initial extraction
+        fragment_count=$(wc -l < {params.temp_dir}/fragments.bed)
+        echo "Total extracted fragments: $fragment_count" >> {log}
         
-        # Count fragments occurring exactly once
-        sort tmp_fragments_{wildcards.sample}.bed | uniq -c > tmp_count_{wildcards.sample}.txt
-        one_read=$(grep -w "1" tmp_count_{wildcards.sample}.txt | wc -l)
+        # Get fragment count by genomic location (for identifying PCR duplicates)
+        sort -k1,1 -k2,2n -k3,3n {params.temp_dir}/fragments.bed | \
+        uniq -c > {params.temp_dir}/fragment_counts.txt
         
-        # Count fragments occurring exactly twice
-        two_reads=$(grep -w "2" tmp_count_{wildcards.sample}.txt | wc -l)
+        # Extract statistics
+        # Number of unique genomic locations (Nd)
+        unique=$(wc -l < {params.temp_dir}/fragment_counts.txt)
+        
+        # calulation of N1 and N2
+        one_read=$(awk '$1 == 1' {params.temp_dir}/fragment_counts.txt | wc -l)
+        two_reads=$(awk '$1 == 2' {params.temp_dir}/fragment_counts.txt | wc -l)
+        
+        # Get total mapped reads for comparison
+        total_reads=$(samtools view -c {input.bam})
+        
+        echo "Unique locations: $unique" >> {log}
+        echo "Locations with exactly one fragment: $one_read" >> {log}
+        echo "Locations with exactly two fragments: $two_reads" >> {log}
+        echo "Total mapped reads: $total_reads" >> {log}
         
         # Prevent division by zero
-        if [ "$unique" -eq 0 ]; then unique=1; fi
-        if [ "$two_reads" -eq 0 ]; then two_reads=1; fi
+        if [ "$one_read" -eq 0 ]; then 
+            echo "WARNING: No unique fragments found, setting to 1 to prevent division by zero" >> {log}
+            one_read=1
+        fi
         
-        # Calculate NRF (Non-Redundant Fraction)
-        nrf=$(echo "scale=4; $unique / $fragment_count" | bc)
+        # Calculate metrics
+        # NRF = Distinct locations / Total fragments
+        nrf=$(echo "scale=6; $unique / $fragment_count" | bc)
         
-        # Calculate PBC1 (PCR Bottleneck Coefficient 1)
-        pbc1=$(echo "scale=4; $one_read / $unique" | bc)
+        # PBC1 = Locations with exactly one fragment / Distinct locations
+        pbc1=$(echo "scale=6; $one_read / $unique" | bc)
         
-        # Calculate PBC2 (PCR Bottleneck Coefficient 2)
-        pbc2=$(echo "scale=4; $one_read / $two_reads" | bc)
+        # PBC2 = Locations with exactly one fragment / Locations with exactly two fragments
+        if [ "$two_reads" -eq 0 ]; then
+            two_reads=1  # Set again right before calculation to be sure
+            echo "CRITICAL: two_reads is still 0 before PBC2 calculation, forcing to 1" >> {log}
+        fi
+        pbc2=$(echo "scale=6; $one_read / $two_reads" | bc)
         
         # Write results
-        echo -e "Total Fragments\\t$fragment_count" > {output.txt}
-        echo -e "Unique Fragments\\t$unique" >> {output.txt}
-        echo -e "One-read Fragments\\t$one_read" >> {output.txt}
-        echo -e "Two-read Fragments\\t$two_reads" >> {output.txt}
-        echo -e "NRF\\t$nrf" >> {output.txt}
-        echo -e "PBC1\\t$pbc1" >> {output.txt}
-        echo -e "PBC2\\t$pbc2" >> {output.txt}
+        echo "## Library Complexity Metrics for {wildcards.sample} ##" > {output.txt}
+        echo -e "Total Reads\\t$total_reads" >> {output.txt}
+        echo -e "Total Fragments\\t$fragment_count" >> {output.txt}
+        echo -e "Distinct Fragment Locations (Nd)\\t$unique" >> {output.txt}
+        echo -e "Locations with 1 Fragment (N1)\\t$one_read" >> {output.txt}
+        echo -e "Locations with 2 Fragments (N2)\\t$two_reads" >> {output.txt}
+        echo -e "NRF (Nd/Total)\\t$nrf" >> {output.txt}
+        echo -e "PBC1 (N1/Nd)\\t$pbc1" >> {output.txt}
+        echo -e "PBC2 (N1/N2)\\t$pbc2" >> {output.txt}
+        
+        # Add assessment
+        echo -e "\\n## Quality Assessment ##" >> {output.txt}
+        
+        # NRF assessment
+        if (( $(echo "$nrf > 0.9" | bc -l) )); then
+            echo -e "NRF: $nrf - High complexity (>0.9)" >> {output.txt}
+        elif (( $(echo "$nrf > 0.8" | bc -l) )); then
+            echo -e "NRF: $nrf - Good complexity (0.8-0.9)" >> {output.txt}
+        elif (( $(echo "$nrf > 0.7" | bc -l) )); then
+            echo -e "NRF: $nrf - Moderate complexity (0.7-0.8)" >> {output.txt}
+        else
+            echo -e "NRF: $nrf - Low complexity (<0.7)" >> {output.txt}
+        fi
+        
+        # PBC1 assessment
+        if (( $(echo "$pbc1 > 0.9" | bc -l) )); then
+            echo -e "PBC1: $pbc1 - Near ideal (>0.9)" >> {output.txt}
+        elif (( $(echo "$pbc1 > 0.8" | bc -l) )); then
+            echo -e "PBC1: $pbc1 - Good (0.8-0.9)" >> {output.txt}
+        elif (( $(echo "$pbc1 > 0.7" | bc -l) )); then
+            echo -e "PBC1: $pbc1 - Moderate (0.7-0.8)" >> {output.txt}
+        else
+            echo -e "PBC1: $pbc1 - Severe bottlenecking (<0.7)" >> {output.txt}
+        fi
+        
+        # PBC2 assessment
+        if (( $(echo "$pbc2 > 10" | bc -l) )); then
+            echo -e "PBC2: $pbc2 - Near ideal (>10)" >> {output.txt}
+        elif (( $(echo "$pbc2 > 3" | bc -l) )); then
+            echo -e "PBC2: $pbc2 - Good (3-10)" >> {output.txt}
+        elif (( $(echo "$pbc2 > 1" | bc -l) )); then
+            echo -e "PBC2: $pbc2 - Moderate (1-3)" >> {output.txt}
+        else
+            echo -e "PBC2: $pbc2 - Severe bottlenecking (<1)" >> {output.txt}
+        fi
         
         # Clean up temporary files
-        rm tmp_fragments_{wildcards.sample}.bed tmp_count_{wildcards.sample}.txt
+        rm -rf {params.temp_dir} {params.tmp}
+        
+        echo "Library complexity calculation completed for {wildcards.sample}" >> {log}
         """
