@@ -171,7 +171,6 @@ rule remove_duplicates:
         """
 
 # Filter against blacklist regions
-# Filter against blacklist regions
 rule filter_blacklist:
     priority: 10
     input:
