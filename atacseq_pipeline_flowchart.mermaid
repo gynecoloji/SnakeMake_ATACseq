@@ -1,0 +1,230 @@
+flowchart TD
+    %% Input Data Group
+    subgraph INPUT["📁 INPUT DATA"]
+        A[Raw FASTQ Files<br/>R1 & R2]
+        LLL[Sample Table CSV]
+        MMM[HISAT2 Genome Index]
+        NNN[Blacklist BED File]
+        OOO[GTF Annotation File]
+        PPP[2bit Genome File]
+        YY[Predefined Regions<br/>Promoter/Enhancer BED]
+        KKK[Config YAML<br/>Parameters & Paths]
+    end
+    
+    %% Pre-processing Group
+    subgraph PREPROC["🔧 PRE-PROCESSING"]
+        B[FastQC<br/>Quality Control]
+        C[Fastp<br/>Trimming & Filtering]
+        D[Quality Reports<br/>HTML/ZIP]
+        E[Trimmed FASTQ Files]
+        F[Fastp Reports<br/>HTML/JSON]
+    end
+    
+    %% Alignment Group
+    subgraph ALIGN["🎯 ALIGNMENT & FILTERING"]
+        G[HISAT2 Alignment<br/>no-spliced-alignment]
+        H[Aligned SAM Files]
+        I[Alignment Summary]
+        J[SAMtools Sort & Filter<br/>Proper pairs only]
+        K[Sorted Filtered BAM<br/>+ Index + Flagstat]
+    end
+    
+    %% Deduplication Group
+    subgraph DEDUP["🔄 DEDUPLICATION & BLACKLIST"]
+        L[Picard MarkDuplicates<br/>REMOVE_DUPLICATES=true]
+        M[Deduplicated BAM<br/>+ Metrics]
+        N[Blacklist Filtering<br/>bedtools intersect]
+        O[Clean BAM Files<br/>.nobl.bam + Index]
+        P[Excluded Reads<br/>.blacklisted.bam]
+        Q[Blacklist Stats<br/>Summary Report]
+    end
+    
+    %% Peak Calling Group
+    subgraph PEAKS["🏔️ PEAK CALLING"]
+        R[MACS2 Peak Calling<br/>-f BAMPE --nomodel]
+        S[NarrowPeak Files<br/>.narrowPeak]
+        NN[FRiP Calculation<br/>Fraction of Reads in Peaks]
+        OO[FRiP Scores<br/>.frip.txt]
+        PP[IDR Analysis<br/>Irreducible Discovery Rate]
+        QQ[IDR Peak Files<br/>.idr_peaks.txt]
+    end
+    
+    %% Quality Control Group
+    subgraph QC["📊 QUALITY CONTROL METRICS"]
+        subgraph COVERAGE["Coverage Analysis"]
+            T[DeepTools bamCoverage<br/>RPGC Normalization]
+            U[BigWig Files<br/>.bw]
+            V[BedGraph Files<br/>.bedgraph]
+        end
+        
+        subgraph FRAGMENT["Fragment Analysis"]
+            W[bamPEFragmentSize<br/>Fragment Size Distribution]
+            X[Fragment Size Plot<br/>.png + table]
+        end
+        
+        subgraph FINGERPRINT["Signal Quality"]
+            Y[plotFingerprint<br/>Signal vs Noise]
+            Z[Fingerprint Plot<br/>.pdf + raw counts]
+        end
+        
+        subgraph CORRELATION["Sample Correlation"]
+            AA[multiBamSummary<br/>Binned Coverage]
+            BB[Correlation Matrix<br/>.npz]
+            CC[Scatterplot<br/>.pdf]
+            DD[Heatmap<br/>.pdf]
+            EE[PCA Plot<br/>.pdf + data]
+        end
+        
+        subgraph BIAS["Bias Analysis"]
+            FF[computeGCBias<br/>GC Content Bias]
+            GG[GC Bias Plot<br/>.pdf + frequency]
+            HH[MT Content Analysis<br/>Mitochondrial Reads]
+            II[Chromosome Counts<br/>.txt]
+        end
+        
+        subgraph ENRICHMENT["TSS Enrichment"]
+            JJ[computeMatrix<br/>TSS Reference Point]
+            KK[TSS Matrix<br/>.mat.gz]
+            LL[TSS Heatmap<br/>.pdf]
+            MM[TSS Profile<br/>.pdf]
+        end
+        
+        subgraph COMPLEXITY["Library Complexity"]
+            RR[Fragment Analysis<br/>PCR Bottlenecking]
+            SS[Complexity Metrics<br/>NRF PBC1 PBC2]
+        end
+    end
+    
+    %% Differential Analysis Group
+    subgraph DIFF["🔬 DIFFERENTIAL ANALYSIS"]
+        subgraph METHODS["Peak Set Methods"]
+            TT[Peak Union Method<br/>≥50% Overlap Between Reps]
+            UU[Peak Merge Method<br/>Union of All Peaks]
+            VV[Predefined Regions<br/>Promoters & Enhancers]
+        end
+        
+        subgraph CONSENSUS["Consensus Peak Sets"]
+            WW[Union Peak Set<br/>Overlapping Regions]
+            XX[Merged Peak Set<br/>All Combined Peaks]
+        end
+        
+        subgraph COUNTING["Read Counting"]
+            ZZ[featureCounts<br/>Peak Union Counting]
+            AAA[featureCounts<br/>Peak Merge Counting]
+            BBB[featureCounts<br/>Region Counting]
+        end
+        
+        subgraph MATRICES["Count Matrices"]
+            CCC[Peak Union<br/>Count Matrix]
+            DDD[Peak Merge<br/>Count Matrix]
+            EEE[Promoter/Enhancer<br/>Count Matrix]
+        end
+        
+        subgraph STATS["Statistical Analysis"]
+            FFF[DESeq2/edgeR/limma<br/>Differential Testing]
+            GGG[Significant Regions<br/>Statistical Results]
+        end
+        
+        subgraph DOWNSTREAM["Downstream Analysis"]
+            HHH[Visualizations<br/>Heatmaps MA-plots PCA]
+            III[Gene Annotation<br/>Nearest Genes]
+            JJJ[Motif Analysis<br/>Enriched TF Motifs]
+        end
+    end
+    
+    %% Main Flow Connections
+    A --> B
+    A --> C
+    B --> D
+    C --> E
+    C --> F
+    E --> G
+    G --> H
+    G --> I
+    H --> J
+    J --> K
+    K --> L
+    L --> M
+    M --> N
+    N --> O
+    N --> P
+    N --> Q
+    
+    %% Peak Calling Connections
+    O --> R
+    R --> S
+    S --> NN
+    O --> NN
+    NN --> OO
+    S --> PP
+    PP --> QQ
+    
+    %% QC Connections
+    O --> T
+    T --> U
+    T --> V
+    O --> W
+    W --> X
+    O --> Y
+    Y --> Z
+    O --> AA
+    AA --> BB
+    BB --> CC
+    BB --> DD
+    BB --> EE
+    O --> FF
+    FF --> GG
+    O --> HH
+    HH --> II
+    U --> JJ
+    JJ --> KK
+    KK --> LL
+    KK --> MM
+    K --> RR
+    RR --> SS
+    
+    %% Differential Analysis Connections
+    S --> TT
+    S --> UU
+    YY --> VV
+    TT --> WW
+    UU --> XX
+    WW --> ZZ
+    XX --> AAA
+    VV --> BBB
+    O --> ZZ
+    O --> AAA
+    O --> BBB
+    ZZ --> CCC
+    AAA --> DDD
+    BBB --> EEE
+    CCC --> FFF
+    DDD --> FFF
+    EEE --> FFF
+    FFF --> GGG
+    GGG --> HHH
+    GGG --> III
+    GGG --> JJJ
+    
+    %% Configuration Connections
+    KKK -.-> G
+    KKK -.-> L
+    KKK -.-> N
+    KKK -.-> R
+    LLL -.-> G
+    LLL -.-> FFF
+    MMM -.-> G
+    NNN -.-> N
+    OOO -.-> JJ
+    PPP -.-> FF
+    
+    %% Styling
+    classDef inputGroup fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef processGroup fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef outputGroup fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
+    classDef analysisGroup fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    
+    class INPUT inputGroup
+    class PREPROC,ALIGN,DEDUP,PEAKS processGroup
+    class QC outputGroup
+    class DIFF analysisGroup
