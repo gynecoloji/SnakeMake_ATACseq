@@ -193,6 +193,8 @@ genome_2bit: "ref/hg38.2bit" # generated or downloaded by yourself
 ## Data Preparation
 
 ### Input Files
+Please pay attention to the **common suffix** of the fastq related raw files (_R1/2_001.fastq.gz)
+Accepted file format should look like: **sample_id**+**common suffix** (e.g. GSF4007-Control_1_S11_R1_001.fastq.gz)
 
 Place paired-end FASTQ files in the `data/` directory following this naming convention:
 ```
